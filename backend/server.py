@@ -3,11 +3,29 @@ from typing import List, Dict, Any
 import json
 import uuid
 import random
+import logging
+
+# Setup logging
+logger = logging.getLogger("game")
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
 
 # Game state storage
-games: Dict[str, Any] = {}
+class GameState:
+    def __init__(self):
+        self.games: Dict[str, Game] = {}
+
+    def get_game(self, game_id: str) -> Game:
+        if game_id not in self.games:
+            self.games[game_id] = Game()
+        return self.games[game_id]
+
+    def remove_game(self, game_id: str):
+        if game_id in self.games:
+            del self.games[game_id]
+
+game_state = GameState()
 
 # Define the game deck
 FULL_DECK = [
@@ -33,6 +51,7 @@ FULL_DECK = [
 
 class Game:
     def __init__(self):
+        """Initialize a new game with a unique ID, players, board, hands, turn, scores, and deck."""
         self.id = str(uuid.uuid4())
         self.players: List[WebSocket] = []
         self.board = {"Air": [], "Land": [], "Sea": []}
@@ -49,6 +68,7 @@ class Game:
         self.hands[1] = self.deck[6:12]
 
     def play_card(self, card: Dict, theater: str, player_id: int):
+        """Play a card to the board and apply its ability."""
         self.board[theater].append(card)
         self.hands[player_id].remove(card)
         self.apply_ability(card, theater, player_id)
@@ -82,21 +102,41 @@ class Game:
         elif card["ability"] == "peek":
             if self.hands[opponent]:  
                 peeked_card = self.hands[opponent][0]  
-                print(f"Peeked at opponent's card: {peeked_card['name']} (Strength: {peeked_card['strength']})")
+                logger.info(f"Peeked at opponent's card: {peeked_card['name']} (Strength: {peeked_card['strength']})")
+
+    def validate_move(self, move: Dict, player_id: int) -> bool:
+        """Validate the move made by the player."""
+        card = move.get("card")
+        theater = move.get("theater")
+        if card not in self.hands[player_id]:
+            return False
+        if theater not in self.board:
+            return False
+        return True
+
+    async def handle_move(self, move: Dict, websocket: WebSocket, player_id: int):
+        """Handle the move made by the player."""
+        if not self.validate_move(move, player_id):
+            await websocket.send_json({"error": "Invalid move"})
+            return
+        card = move["card"]
+        theater = move["theater"]
+        self.play_card(card, theater, player_id)
 
 @app.websocket("/game/{game_id}/{player_id}")
 async def game_socket(websocket: WebSocket, game_id: str, player_id: int):
     try:
         player_id = int(player_id)
         await websocket.accept()
-        
-        if game_id not in games:
-            games[game_id] = Game()
 
-        game = games[game_id]
-        
         if player_id not in [0, 1]:
             await websocket.close(code=1003, reason="Invalid player ID")
+            return
+
+        game = game_state.get_game(game_id)
+
+        if len(game.players) >= 2:
+            await websocket.close(code=1003, reason="Game already full")
             return
 
         game.players.append(websocket)
@@ -111,14 +151,7 @@ async def game_socket(websocket: WebSocket, game_id: str, player_id: int):
                     continue
 
                 if move["action"] == "play_card":
-                    card = move["card"]
-                    theater = move["theater"]
-
-                    if card in game.hands[player_id]:
-                        game.play_card(card, theater, player_id)
-                    else:
-                        await websocket.send_json({"error": "Card not in hand"})
-                        continue
+                    await game.handle_move(move, websocket, player_id)
 
                 elif move["action"] == "withdraw":
                     game.scores[1 - player_id] += 6
@@ -134,7 +167,8 @@ async def game_socket(websocket: WebSocket, game_id: str, player_id: int):
         except WebSocketDisconnect:
             game.players.remove(websocket)
             if not game.players:
-                del games[game_id]
+                game_state.remove_game(game_id)
 
     except Exception as e:
+        logger.error(f"Error: {e}")
         await websocket.close(code=1003, reason=str(e))
