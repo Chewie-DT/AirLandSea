@@ -15,9 +15,23 @@ jobs:
         uses: actions/setup-python@v2
         with:
           python-version: "3.10"
+      - name: Cache dependencies
+        uses: actions/cache@v2
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
       - name: Install dependencies
         run: |
           pip install -r backend/requirements.txt
       - name: Deploy FastAPI
         run: |
           uvicorn backend.server:app --host 0.0.0.0 --port 8000 --reload
+      - name: Build and push Docker image
+        run: |
+          docker build -t myapp/backend:latest .
+          docker push myapp/backend:latest
+      - name: Deploy to cloud provider
+        run: |
+          # Add cloud provider deployment commands here
