@@ -16,7 +16,7 @@ class GameState:
     def __init__(self):
         self.games: Dict[str, Game] = {}
 
-    def get_game(self, game_id: str) -> Game:
+    def get_game(self, game_id: str) -> 'Game':
         if game_id not in self.games:
             self.games[game_id] = Game()
         return self.games[game_id]
@@ -51,96 +51,80 @@ FULL_DECK = [
 
 class Game:
     def __init__(self):
-        """Initialize a new game with a unique ID, players, board, hands, turn, scores, and deck."""
         self.id = str(uuid.uuid4())
-        self.players: List[WebSocket] = []
+        self.players: Dict[int, WebSocket] = {}
         self.board = {"Air": [], "Land": [], "Sea": []}
         self.hands = {}
         self.turn = 0
         self.scores = {0: 0, 1: 0}
-        self.deck = FULL_DECK.copy()
         self.victory_points = {0: 0, 1: 0}
+        self.deck = FULL_DECK.copy()
         self.deal_hands()
 
     def deal_hands(self):
-        """Shuffle and distribute cards to players."""
         random.shuffle(self.deck)
         self.hands[0] = self.deck[:6]
         self.hands[1] = self.deck[6:12]
 
     def play_card(self, card: Dict, theater: str, player_id: int, face_down: bool = False):
-        """Play a card to the board and apply its ability."""
         if face_down:
-            card = {"name": "Face Down", "strength": 2, "theater": theater, "ability": None}
+            card = {"name": "Face Down", "strength": 2, "theater": theater, "ability": None, "player": player_id}
+        else:
+            card["player"] = player_id
+        
         self.board[theater].append(card)
         self.hands[player_id].remove(card)
+
         if not face_down:
             self.apply_ability(card, theater, player_id)
-        self.turn = 1 - self.turn  # Switch turn
+
+        self.turn = 1 - self.turn
 
     def apply_ability(self, card: Dict, theater: str, player_id: int):
-        """Apply special abilities based on card effects."""
-        opponent = 1 - player_id  # Get the opponent's ID
+        opponent = 1 - player_id
 
         if card["ability"] == "flip":
-            if self.board[theater]:  
-                self.board[theater][-1]["strength"] = 0  
+            for played_card in reversed(self.board[theater]):
+                if played_card.get("player") != player_id and played_card["name"] != "Face Down":
+                    played_card["strength"] = 0
+                    break
 
         elif card["ability"] == "move":
-            if self.board[theater]:  
-                moved_card = self.board[theater].pop()  
-                new_theater = random.choice(["Air", "Land", "Sea"])  
+            if self.board[theater]:
+                moved_card = self.board[theater].pop()
+                new_theater = random.choice(["Air", "Land", "Sea"])
                 self.board[new_theater].append(moved_card)
 
         elif card["ability"] == "weaken":
-            if self.board[theater]:  
+            if self.board[theater]:
                 self.board[theater][-1]["strength"] = max(0, self.board[theater][-1]["strength"] - 2)
 
         elif card["ability"] == "reinforce":
-            if self.board[theater]:  
-                self.board[theater][-1]["strength"] += 2  
+            if self.board[theater]:
+                self.board[theater][-1]["strength"] += 2
 
         elif card["ability"] == "disable":
-            self.hands[opponent] = [{"name": card["name"], "strength": card["strength"], "theater": card["theater"], "ability": None} if c == card else c for c in self.hands[opponent]]
+            for i, c in enumerate(self.hands[opponent]):
+                if c == card:
+                    self.hands[opponent][i] = {"name": c["name"], "strength": c["strength"], "theater": c["theater"], "ability": None}
 
         elif card["ability"] == "peek":
-            if self.hands[opponent]:  
-                peeked_card = self.hands[opponent][0]  
+            if self.hands[opponent]:
+                peeked_card = self.hands[opponent][0]
                 logger.info(f"Peeked at opponent's card: {peeked_card['name']} (Strength: {peeked_card['strength']})")
 
-    def validate_move(self, move: Dict, player_id: int) -> bool:
-        """Validate the move made by the player."""
-        card = move.get("card")
-        theater = move.get("theater")
-        if card not in self.hands[player_id]:
-            return False
-        if theater not in self.board:
-            return False
-        return True
-
-    async def handle_move(self, move: Dict, websocket: WebSocket, player_id: int):
-        """Handle the move made by the player."""
-        if not self.validate_move(move, player_id):
-            await websocket.send_json({"error": "Invalid move"})
-            return
-        card = move["card"]
-        theater = move["theater"]
-        face_down = move.get("face_down", False)
-        self.play_card(card, theater, player_id, face_down)
-
     def calculate_victory_points(self):
-        """Calculate and assign victory points based on the current board state."""
-        air_strength = sum(card["strength"] for card in self.board["Air"])
-        land_strength = sum(card["strength"] for card in self.board["Land"])
-        sea_strength = sum(card["strength"] for card in self.board["Sea"])
+        player_0_control = sum(1 for theater in self.board if sum(card["strength"] for card in self.board[theater] if card["player"] == 0) >
+                               sum(card["strength"] for card in self.board[theater] if card["player"] == 1))
+        player_1_control = 3 - player_0_control
 
-        if air_strength > land_strength and air_strength > sea_strength:
-            self.victory_points[0] += 6
-        elif land_strength > air_strength and land_strength > sea_strength:
-            self.victory_points[1] += 6
-        else:
-            self.victory_points[0] += 3
-            self.victory_points[1] += 3
+        if player_0_control >= 2:
+            self.victory_points[0] += self.get_round_score()
+        elif player_1_control >= 2:
+            self.victory_points[1] += self.get_round_score()
+
+    def get_round_score(self):
+        return 6 - sum(len(theater) for theater in self.board.values())
 
 @app.websocket("/game/{game_id}/{player_id}")
 async def game_socket(websocket: WebSocket, game_id: str, player_id: int):
@@ -158,7 +142,7 @@ async def game_socket(websocket: WebSocket, game_id: str, player_id: int):
             await websocket.close(code=1003, reason="Game already full")
             return
 
-        game.players.append(websocket)
+        game.players[player_id] = websocket
 
         try:
             while True:
@@ -173,11 +157,13 @@ async def game_socket(websocket: WebSocket, game_id: str, player_id: int):
                     await game.handle_move(move, websocket, player_id)
 
                 elif move["action"] == "withdraw":
-                    game.scores[1 - player_id] += 6
+                    game.scores[1 - player_id] += game.get_round_score()
+                    game.board = {"Air": [], "Land": [], "Sea": []}
+                    game.hands = {0: [], 1: []}
 
                 game.calculate_victory_points()
 
-                for player in game.players:
+                for player in game.players.values():
                     await player.send_json({
                         "board": game.board,
                         "hands": game.hands,
@@ -187,7 +173,7 @@ async def game_socket(websocket: WebSocket, game_id: str, player_id: int):
                     })
 
         except WebSocketDisconnect:
-            game.players.remove(websocket)
+            del game.players[player_id]
             if not game.players:
                 game_state.remove_game(game_id)
 
