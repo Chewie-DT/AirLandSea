@@ -59,6 +59,7 @@ class Game:
         self.turn = 0
         self.scores = {0: 0, 1: 0}
         self.deck = FULL_DECK.copy()
+        self.victory_points = {0: 0, 1: 0}
         self.deal_hands()
 
     def deal_hands(self):
@@ -67,11 +68,14 @@ class Game:
         self.hands[0] = self.deck[:6]
         self.hands[1] = self.deck[6:12]
 
-    def play_card(self, card: Dict, theater: str, player_id: int):
+    def play_card(self, card: Dict, theater: str, player_id: int, face_down: bool = False):
         """Play a card to the board and apply its ability."""
+        if face_down:
+            card = {"name": "Face Down", "strength": 2, "theater": theater, "ability": None}
         self.board[theater].append(card)
         self.hands[player_id].remove(card)
-        self.apply_ability(card, theater, player_id)
+        if not face_down:
+            self.apply_ability(card, theater, player_id)
         self.turn = 1 - self.turn  # Switch turn
 
     def apply_ability(self, card: Dict, theater: str, player_id: int):
@@ -121,7 +125,22 @@ class Game:
             return
         card = move["card"]
         theater = move["theater"]
-        self.play_card(card, theater, player_id)
+        face_down = move.get("face_down", False)
+        self.play_card(card, theater, player_id, face_down)
+
+    def calculate_victory_points(self):
+        """Calculate and assign victory points based on the current board state."""
+        air_strength = sum(card["strength"] for card in self.board["Air"])
+        land_strength = sum(card["strength"] for card in self.board["Land"])
+        sea_strength = sum(card["strength"] for card in self.board["Sea"])
+
+        if air_strength > land_strength and air_strength > sea_strength:
+            self.victory_points[0] += 6
+        elif land_strength > air_strength and land_strength > sea_strength:
+            self.victory_points[1] += 6
+        else:
+            self.victory_points[0] += 3
+            self.victory_points[1] += 3
 
 @app.websocket("/game/{game_id}/{player_id}")
 async def game_socket(websocket: WebSocket, game_id: str, player_id: int):
@@ -156,12 +175,15 @@ async def game_socket(websocket: WebSocket, game_id: str, player_id: int):
                 elif move["action"] == "withdraw":
                     game.scores[1 - player_id] += 6
 
+                game.calculate_victory_points()
+
                 for player in game.players:
                     await player.send_json({
                         "board": game.board,
                         "hands": game.hands,
                         "turn": game.turn,
                         "scores": game.scores,
+                        "victory_points": game.victory_points,
                     })
 
         except WebSocketDisconnect:
