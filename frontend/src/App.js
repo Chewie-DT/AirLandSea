@@ -1,7 +1,13 @@
 import React, { useEffect, useState } from "react";
 import io from "socket.io-client";
 
-const socket = io("ws://localhost:8000");
+const socket = io(process.env.REACT_APP_WS_URL || "ws://localhost:8000");
+
+const GameBoard = ({ gameState }) => (
+  <div>
+    <pre>{JSON.stringify(gameState, null, 2)}</pre>
+  </div>
+);
 
 const App = () => {
   const [gameState, setGameState] = useState(null);
@@ -10,6 +16,15 @@ const App = () => {
     socket.on("message", (data) => {
       setGameState(data);
     });
+
+    socket.on("connect_error", (err) => {
+      console.error("Connection error:", err);
+    });
+
+    return () => {
+      socket.off("message");
+      socket.off("connect_error");
+    };
   }, []);
 
   const playCard = (card, theater) => {
@@ -17,12 +32,12 @@ const App = () => {
   };
 
   return (
-    <div>
+    <div style={{ padding: "20px" }}>
       <h1>Air, Land & Sea</h1>
-      <button onClick={() => playCard("Fighter Jet", "Air")}>Play Fighter Jet</button>
-      <div>
-        <pre>{JSON.stringify(gameState, null, 2)}</pre>
-      </div>
+      <button style={{ margin: "10px" }} onClick={() => playCard("Fighter Jet", "Air")}>
+        Play Fighter Jet
+      </button>
+      <GameBoard gameState={gameState} />
     </div>
   );
 };
