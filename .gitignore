@@ -9,3 +9,20 @@ build/
 
 # Ignore environment variables
 .env
+
+# Ignore IDE files
+.vscode/
+.idea/
+
+# Ignore log files
+*.log
+logs/
+
+# Ignore macOS files
+.DS_Store
+
+# Ignore Windows files
+Thumbs.db
+
+# Ignore compiled output
+dist/
